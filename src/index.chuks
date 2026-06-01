@@ -1,0 +1,105 @@
+// ┌─────────────────────────────────────────────────────────────────┐
+// │  chuks_ai — Unified AI/LLM client for Chuks                    │
+// │                                                                 │
+// │  One package. Every LLM provider. Native streaming via          │
+// │  channels, parallel inference with spawn, typed structured      │
+// │  outputs, and function/tool calling.                            │
+// │                                                                 │
+// │  Usage:                                                         │
+// │    import { ai } from "pkg/chuks_ai"                            │
+// │    var client = ai.openai("gpt-4o")                             │
+// │    var response = await client.complete("Hello, world!")         │
+// └─────────────────────────────────────────────────────────────────┘
+
+import { OpenAIClient, createOpenAI, CompletionResult, EmbeddingResult, ChatMessage, ToolDefinition, ToolCall } from "./providers/openai.chuks"
+import { AnthropicClient, createAnthropic } from "./providers/anthropic.chuks"
+import { GoogleClient, createGoogle } from "./providers/google.chuks"
+import { MistralClient, createMistral } from "./providers/mistral.chuks"
+import { OllamaClient, createOllama } from "./providers/ollama.chuks"
+import { GroqClient, createGroq } from "./providers/groq.chuks"
+
+// ─── AI Facade ──────────────────────────────────────────────────
+// The unified entry point. Every provider is created through this
+// single object, ensuring a consistent interface.
+//
+//   var client = ai.openai("gpt-4o")          // OpenAI
+//   var client = ai.anthropic("claude-sonnet-4-20250514")  // Anthropic
+//   var client = ai.google("gemini-1.5-pro")   // Google Gemini
+//   var client = ai.mistral("mistral-large")   // Mistral
+//   var client = ai.ollama("llama3")           // Local Ollama
+//   var client = ai.groq("llama3-70b-8192")    // Groq (fast)
+//
+// All clients share the same API:
+//   .complete(prompt, options?)       → CompletionResult
+//   .stream(prompt, channel, options?) → streams tokens into channel
+//   .structured(prompt, schema)       → parsed JSON object
+//   .embed(input, model?)             → EmbeddingResult
+//   .registerTool(name, desc, params, handler)
+//   .completeWithTools(prompt)        → auto-executes tool calls
+//   .system(prompt)                   → set system prompt (fluent)
+//   .temperature(t)                   → set temperature (fluent)
+//   .maxTokens(n)                     → set max tokens (fluent)
+//   .enableHistory(max?)              → enable conversation memory
+//   .clearHistory()                   → reset conversation
+
+class AI {
+
+    // ─── Provider Factories ─────────────────────────────────────
+
+    // OpenAI — GPT-4o, GPT-4, GPT-3.5-turbo, o1, o1-mini, etc.
+    // Config: { apiKey?, baseUrl?, temperature?, maxTokens?, systemPrompt? }
+    public openai(model: string, config: any?): OpenAIClient {
+        return createOpenAI(model, config)
+    }
+
+    // Anthropic — Claude 3.5 Sonnet, Claude 3 Opus/Haiku, etc.
+    // Config: { apiKey?, baseUrl?, temperature?, maxTokens?, systemPrompt?, apiVersion? }
+    public anthropic(model: string, config: any?): AnthropicClient {
+        return createAnthropic(model, config)
+    }
+
+    // Google Gemini — gemini-1.5-pro, gemini-1.5-flash, gemini-2.0-flash, etc.
+    // Config: { apiKey?, baseUrl?, temperature?, maxTokens?, systemPrompt? }
+    public google(model: string, config: any?): GoogleClient {
+        return createGoogle(model, config)
+    }
+
+    // Mistral — mistral-large, mistral-small, codestral, open-mixtral, etc.
+    // Config: { apiKey?, baseUrl?, temperature?, maxTokens?, systemPrompt? }
+    public mistral(model: string, config: any?): MistralClient {
+        return createMistral(model, config)
+    }
+
+    // Ollama — local models: llama3, mistral, gemma, phi, codellama, etc.
+    // Config: { baseUrl?, temperature?, maxTokens?, systemPrompt? }
+    // No API key needed — runs on localhost:11434 by default
+    public ollama(model: string, config: any?): OllamaClient {
+        return createOllama(model, config)
+    }
+
+    // Groq — ultra-fast inference: llama3-70b-8192, mixtral-8x7b-32768, gemma-7b-it, etc.
+    // Config: { apiKey?, baseUrl?, temperature?, maxTokens?, systemPrompt? }
+    public groq(model: string, config: any?): GroqClient {
+        return createGroq(model, config)
+    }
+}
+
+// ─── Singleton Export ───────────────────────────────────────────
+
+const ai = new AI()
+
+export {
+    ai,
+    AI,
+    OpenAIClient,
+    AnthropicClient,
+    GoogleClient,
+    MistralClient,
+    OllamaClient,
+    GroqClient,
+    CompletionResult,
+    EmbeddingResult,
+    ChatMessage,
+    ToolDefinition,
+    ToolCall
+}

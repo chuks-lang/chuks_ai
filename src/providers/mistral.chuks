@@ -1,0 +1,462 @@
+// chuks_ai/providers/mistral — Mistral AI API provider (Mistral Large, Small, Codestral, etc.)
+// Mistral uses an OpenAI-compatible API format
+import { http } from "std/http"
+import { json } from "std/json"
+import { Channel } from "std/channel"
+import { strings } from "std/strings"
+import { dotenv } from "std/dotenv"
+
+// Chat-completion result. See `openai.chuks` for full field docs.
+dataType CompletionResult {
+    content: string;
+    model: string;
+    usage: any;
+    finishReason: string;
+    toolCalls: []any;
+}
+
+// Embedding-call result. See `openai.chuks` for full field docs.
+dataType EmbeddingResult {
+    embedding: []any;
+    model: string;
+    usage: any;
+}
+
+// ─── Mistral Client ────────────────────────────────────────────
+
+// Mistral AI client (`mistral-large`, `mistral-small`, `codestral`,
+    // `open-mixtral`, …).
+//
+// Mistral exposes an OpenAI-compatible API, so this client mirrors
+// `OpenAIClient` very closely. Construct via `ai.mistral(model, config?)`.
+// The API key is taken from `config.apiKey` or the `MISTRAL_API_KEY`
+// environment variable.
+//
+// Config (all optional):
+// - `apiKey`       — Mistral API key
+// - `baseUrl`      — override base URL (default `https://api.mistral.ai/v1`)
+// - `temperature`  — default sampling temperature (default `0.7`)
+// - `maxTokens`    — default max tokens per response (default `4096`)
+// - `systemPrompt` — prepended on every conversation
+class MistralClient {
+    private var _apiKey: string = ""
+    private var _model: string = ""
+    private var _baseUrl: string = "https://api.mistral.ai/v1"
+    private var _temperature: any = 0.7
+    private var _maxTokens: int = 4096
+    private var _systemPrompt: string = ""
+    private var _tools: []any = []
+    private var _toolHandlers: any = null
+    private var _history: []any = []
+    private var _historyEnabled: bool = false
+    private var _maxHistory: int = 50
+
+    constructor(model: string, config: any?) {
+        this._model = model
+        if (config != null) {
+            if (config.apiKey != null) { this._apiKey = config.apiKey }
+            if (config.baseUrl != null) { this._baseUrl = config.baseUrl }
+            if (config.temperature != null) { this._temperature = config.temperature }
+            if (config.maxTokens != null) { this._maxTokens = config.maxTokens }
+            if (config.systemPrompt != null) { this._systemPrompt = config.systemPrompt }
+        }
+        if (this._apiKey == "") {
+            dotenv.load()
+            this._apiKey = dotenv.get("MISTRAL_API_KEY", "")
+        }
+    }
+
+    // ─── Configuration ──────────────────────────────────────────
+
+    // Set the system prompt prepended to every request. Returns the client
+    // for fluent chaining.
+    public system(prompt: string): MistralClient {
+        this._systemPrompt = prompt
+        return this
+    }
+
+    // Set the default sampling temperature. Returns the client for fluent
+    // chaining. Override per call via `options.temperature`.
+    public temperature(t: any): MistralClient {
+        this._temperature = t
+        return this
+    }
+
+    // Set the default max tokens per response. Returns the client for fluent
+    // chaining. Override per call via `options.maxTokens`.
+    public maxTokens(n: int): MistralClient {
+        this._maxTokens = n
+        return this
+    }
+
+    // Enable conversation memory: subsequent `complete`/`stream` calls send
+    // every prior user+assistant turn back to the model.
+    //
+    // Args:
+    // - `maxMessages` — cap on retained turn pairs (default `50`)
+    //
+    // Returns the client for fluent chaining.
+    public enableHistory(maxMessages: int?): MistralClient {
+        this._historyEnabled = true
+        if (maxMessages != null) {
+            this._maxHistory = maxMessages
+        }
+        return this
+    }
+
+    // Wipe the in-memory conversation history.
+    public clearHistory(): void {
+        this._history = []
+    }
+
+    // ─── Tool Registration ──────────────────────────────────────
+
+    // Register a tool the model may call via `completeWithTools`.
+    //
+    // Args:
+    // - `name`        — tool identifier
+    // - `description` — natural-language hint
+    // - `parameters`  — JSON Schema for the tool's args
+    // - `handler`     — function `(args: any) -> any`
+    //
+    // Returns the client for fluent chaining.
+    public registerTool(name: string, description: string, parameters: any, handler: any): MistralClient {
+        var tool: any = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+            }
+        }
+        this._tools.push(tool)
+        if (this._toolHandlers == null) {
+            this._toolHandlers = {}
+        }
+        this._toolHandlers[name] = handler
+        return this
+    }
+
+    // ─── Core: Complete ─────────────────────────────────────────
+
+    // Single-shot chat completion.
+    //
+    // Args:
+    // - `prompt`  — the user message
+    // - `options` — optional overrides: `temperature`, `maxTokens`, `topP`,
+    //               `stop`, `responseFormat`, `toolChoice`, or `messages`
+    //               (override conversation entirely; used by chuks_agent).
+    //
+    // Returns a `CompletionResult`. On HTTP error returns an empty result
+    // with `finishReason = "error"`.
+    public async complete(prompt: string, options: any?): Task<CompletionResult> {
+        // options.messages override — caller supplies pre-built messages
+        // (used by chuks_agent's v2 tool-call loop)
+        var messages: []any = []
+        if (options != null && options.messages != null) {
+            messages = options.messages
+        } else {
+            messages = this._buildMessages(prompt)
+        }
+        var body: any = {
+            "model": this._model,
+            "messages": messages,
+            "temperature": this._temperature,
+            "max_tokens": this._maxTokens,
+        }
+        if (this._tools.length > 0) {
+            body["tools"] = this._tools
+        }
+        if (options != null) {
+            if (options.temperature != null) { body["temperature"] = options.temperature }
+            if (options.maxTokens != null) { body["max_tokens"] = options.maxTokens }
+            if (options.topP != null) { body["top_p"] = options.topP }
+        }
+
+        var resp: any = await http.post(
+            this._baseUrl + "/chat/completions",
+            json.stringify(body),
+            this._headers()
+        )
+        var data: any = json.parse(resp.body)
+        if (resp.status != 200) {
+            var errMsg: string = "Mistral API error: " + string(resp.status)
+            if (data.message != null) {
+                errMsg = errMsg + " — " + string(data.message)
+            }
+            println(errMsg)
+            return { content: "", model: this._model, usage: null, finishReason: "error", toolCalls: [] }
+        }
+
+        var choice: any = data.choices[0]
+        var toolCalls: []any = []
+        if (choice.message.tool_calls != null) {
+            var i: int = 0
+            while (i < choice.message.tool_calls.length) {
+                var tc: any = choice.message.tool_calls[i]
+                toolCalls.push({
+                    id: string(tc.id),
+                    name: string(tc.function.name),
+                    arguments: json.parse(string(tc.function.arguments)),
+                })
+                i = i + 1
+            }
+        }
+
+        var result: CompletionResult = {
+            content: string(choice.message.content),
+            model: string(data.model),
+            usage: data.usage,
+            finishReason: string(choice.finish_reason),
+            toolCalls: toolCalls,
+        }
+
+        if (this._historyEnabled) {
+            this._history.push({ "role": "user", "content": prompt })
+            this._history.push({ "role": "assistant", "content": result.content })
+            this._trimHistory()
+        }
+
+        return result
+    }
+
+    // ─── Core: Stream ───────────────────────────────────────────
+
+    // Stream tokens from the model into a channel as they arrive.
+    //
+    // Args:
+    // - `prompt`  — the user message
+    // - `ch`      — `Channel<string>` that receives tokens; closed when done
+    // - `options` — optional `temperature` / `maxTokens` overrides
+    //
+    // Returns the full concatenated assistant text.
+    public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
+        var messages: []any = this._buildMessages(prompt)
+        var body: any = {
+            "model": this._model,
+            "messages": messages,
+            "temperature": this._temperature,
+            "max_tokens": this._maxTokens,
+            "stream": true,
+        }
+        if (options != null) {
+            if (options.temperature != null) { body["temperature"] = options.temperature }
+            if (options.maxTokens != null) { body["max_tokens"] = options.maxTokens }
+        }
+
+        var resp: any = await http.post(
+            this._baseUrl + "/chat/completions",
+            json.stringify(body),
+            this._headers()
+        )
+
+        var fullContent: string = ""
+        var lines: []string = strings.split(resp.body, "\n")
+        var i: int = 0
+        while (i < lines.length) {
+            var line: string = strings.trim(lines[i])
+            if (strings.startsWith(line, "data: ")) {
+                var payload: string = strings.slice(line, 6, line.length)
+                if (payload != "[DONE]") {
+                    var chunk: any = json.parse(payload)
+                    if (chunk.choices != null) {
+                        if (chunk.choices[0].delta != null) {
+                            if (chunk.choices[0].delta.content != null) {
+                                var token: string = string(chunk.choices[0].delta.content)
+                                fullContent = fullContent + token
+                                ch.send(token)
+                            }
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+        ch.close()
+
+        if (this._historyEnabled) {
+            this._history.push({ "role": "user", "content": prompt })
+            this._history.push({ "role": "assistant", "content": fullContent })
+            this._trimHistory()
+        }
+
+        return fullContent
+    }
+
+    // ─── Core: Structured Output ────────────────────────────────
+
+    // Force the model to emit JSON matching `schema` and return the parsed
+    // object. Uses Mistral's `response_format: { type: "json_object" }`.
+    //
+    // Returns the parsed JSON, or `null` on HTTP error.
+    public async structured(prompt: string, schema: any, options: any?): Task<any> {
+        var schemaPrompt: string = prompt + "\n\nRespond ONLY with valid JSON matching this exact schema:\n" + json.stringify(schema)
+        var body: any = {
+            "model": this._model,
+            "messages": this._buildMessages(schemaPrompt),
+            "temperature": this._temperature,
+            "max_tokens": this._maxTokens,
+            "response_format": { "type": "json_object" },
+        }
+
+        var resp: any = await http.post(
+            this._baseUrl + "/chat/completions",
+            json.stringify(body),
+            this._headers()
+        )
+        var data: any = json.parse(resp.body)
+        if (resp.status != 200) {
+            println("Mistral API error: " + string(resp.status))
+            return null
+        }
+
+        var content: string = string(data.choices[0].message.content)
+        return json.parse(content)
+    }
+
+    // ─── Core: Embeddings ───────────────────────────────────────
+
+    // Compute an embedding vector for a single string.
+    //
+    // Args:
+    // - `input` — text to embed
+    // - `model` — embedding model id (default `"mistral-embed"`)
+    //
+    // Returns an `EmbeddingResult`; the vector lives at `.embedding`.
+    public async embed(input: string, model: string?): Task<EmbeddingResult> {
+        var embModel: string = "mistral-embed"
+        if (model != null) {
+            embModel = model
+        }
+        var body: any = {
+            "model": embModel,
+            "input": [input],
+        }
+        var resp: any = await http.post(
+            this._baseUrl + "/embeddings",
+            json.stringify(body),
+            this._headers()
+        )
+        var data: any = json.parse(resp.body)
+        if (resp.status != 200) {
+            println("Mistral Embeddings error: " + string(resp.status))
+            return { embedding: [], model: embModel, usage: null }
+        }
+        return {
+            embedding: data.data[0].embedding,
+            model: embModel,
+            usage: data.usage,
+        }
+    }
+
+    // ─── Core: Tool Execution ───────────────────────────────────
+
+    // Like `complete`, but auto-executes any tool calls the model requests
+    // (looping with registered handlers) until it returns a final answer.
+    //
+    // Returns the final `CompletionResult`.
+    public async completeWithTools(prompt: string, options: any?): Task<CompletionResult> {
+        var result: CompletionResult = await this.complete(prompt, options)
+
+        while (result.finishReason == "tool_calls" || result.toolCalls.length > 0) {
+            var toolMessages: []any = []
+            var i: int = 0
+            while (i < result.toolCalls.length) {
+                var tc: any = result.toolCalls[i]
+                var handler: any = this._toolHandlers[tc.name]
+                if (handler != null) {
+                    var toolResult: any = handler(tc.arguments)
+                    toolMessages.push({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": tc.name,
+                        "content": string(toolResult),
+                    })
+                }
+                i = i + 1
+            }
+
+            var messages: []any = this._buildMessages(prompt)
+            messages.push({ "role": "assistant", "tool_calls": result.toolCalls })
+            var j: int = 0
+            while (j < toolMessages.length) {
+                messages.push(toolMessages[j])
+                j = j + 1
+            }
+
+            var body: any = {
+                "model": this._model,
+                "messages": messages,
+                "temperature": this._temperature,
+                "max_tokens": this._maxTokens,
+                "tools": this._tools,
+            }
+            var resp: any = await http.post(this._baseUrl + "/chat/completions", json.stringify(body), this._headers())
+            var data: any = json.parse(resp.body)
+            var choice: any = data.choices[0]
+            var tcs: []any = []
+            if (choice.message.tool_calls != null) {
+                var k: int = 0
+                while (k < choice.message.tool_calls.length) {
+                    var tc2: any = choice.message.tool_calls[k]
+                    tcs.push({
+                        id: string(tc2.id),
+                        name: string(tc2.function.name),
+                        arguments: json.parse(string(tc2.function.arguments)),
+                    })
+                    k = k + 1
+                }
+            }
+            result = {
+                content: string(choice.message.content),
+                model: string(data.model),
+                usage: data.usage,
+                finishReason: string(choice.finish_reason),
+                toolCalls: tcs,
+            }
+        }
+
+        return result
+    }
+
+    // ─── Internals ──────────────────────────────────────────────
+
+    private _headers(): any {
+        return {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + this._apiKey,
+        }
+    }
+
+    private _buildMessages(prompt: string): []any {
+        var messages: []any = []
+        if (this._systemPrompt != "") {
+            messages.push({ "role": "system", "content": this._systemPrompt })
+        }
+        if (this._historyEnabled) {
+            var i: int = 0
+            while (i < this._history.length) {
+                messages.push(this._history[i])
+                i = i + 1
+            }
+        }
+        messages.push({ "role": "user", "content": prompt })
+        return messages
+    }
+
+    private _trimHistory(): void {
+        while (this._history.length > this._maxHistory * 2) {
+            this._history.shift()
+        }
+    }
+}
+
+// ─── Factory ────────────────────────────────────────────────────
+
+// Factory for `MistralClient`. Prefer `ai.mistral(…)` from the unified
+// facade; exported for direct/internal use.
+function createMistral(model: string, config: any?): MistralClient {
+    return new MistralClient(model, config)
+}
+
+export { MistralClient, createMistral }

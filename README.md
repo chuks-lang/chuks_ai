@@ -12,16 +12,8 @@
 
 ## Install
 
-```json
-{
-  "dependencies": {
-    "chuks_ai": "1.0.0"
-  }
-}
-```
-
 ```bash
-chuks install
+chuks add @chuks/ai
 ```
 
 ---

@@ -29,7 +29,7 @@ chuks install
 ## Quick Start
 
 ```chuks
-import { ai } from "pkg/chuks_ai"
+import { ai } from "pkg/@chuks/ai"
 
 async function main(): Task<any> {
     var client = ai.openai("gpt-4o")
@@ -216,7 +216,7 @@ println(result.usage)         // { input_tokens, output_tokens, ... }
 ### Streaming via channels
 
 ```chuks
-import { ai } from "pkg/chuks_ai"
+import { ai } from "pkg/@chuks/ai"
 import { Channel } from "std/channel"
 
 async function main(): Task<any> {

@@ -150,8 +150,11 @@ class AnthropicClient {
         // options.messages override — caller supplies pre-built messages
         // (used by chuks_agent's v2 tool-call loop)
         var messages: []any = []
+        var sysOverride: string = ""
         if (options != null && options.messages != null) {
-            messages = options.messages
+            var norm: any = this._normalizeMessages(options.messages)
+            messages = norm["messages"]
+            sysOverride = string(norm["system"])
         } else {
             messages = this._buildMessages(prompt)
         }
@@ -163,6 +166,11 @@ class AnthropicClient {
         }
         if (this._systemPrompt != "") {
             body["system"] = this._systemPrompt
+        }
+        // A system prompt carried in the messages array (chuks_agent) wins, since
+        // it is the agent's actual instruction set.
+        if (sysOverride != "") {
+            body["system"] = sysOverride
         }
         if (this._tools.length > 0) {
             body["tools"] = this._tools
@@ -416,6 +424,85 @@ class AnthropicClient {
             "x-api-key": this._apiKey,
             "anthropic-version": this._apiVersion,
         }
+    }
+
+    // chuks_agent hands us OpenAI-shaped messages (roles system/user/assistant/
+    // tool, carrying name/tool_calls/tool_call_id). Anthropic rejects those extra
+    // keys and roles: the system prompt is a top-level field, an assistant's
+    // tool_calls become `tool_use` content blocks, a tool result becomes a user
+    // message with a `tool_result` block, and consecutive same-role turns must be
+    // merged (roles have to alternate). Returns { system, messages } in Anthropic
+    // form. Without this, `json.stringify` emits `"name":null` on every message
+    // and the API 400s with "messages.0.name: Extra inputs are not permitted".
+    private _normalizeMessages(raw: []any): any {
+        var sys: string = ""
+        var out: []any = []
+        var i: int = 0
+        while (i < raw.length) {
+            var m: any = raw[i]
+            var role: string = string(m.role)
+            if (role == "system") {
+                var sc: string = string(m.content)
+                if (sc != "") {
+                    if (sys != "") { sys = sys + "\n\n" }
+                    sys = sys + sc
+                }
+                i = i + 1
+                continue
+            }
+            if (role == "assistant") {
+                var blocks: []any = []
+                var c: string = string(m.content)
+                if (c != "") { blocks.push({ "type": "text", "text": c }) }
+                if (m.tool_calls != null) {
+                    var t: int = 0
+                    while (t < m.tool_calls.length) {
+                        var tc: any = m.tool_calls[t]
+                        blocks.push({
+                            "type": "tool_use",
+                            "id": string(tc.id),
+                            "name": string(tc.name),
+                            "input": tc.arguments,
+                        })
+                        t = t + 1
+                    }
+                }
+                if (blocks.length > 0) {
+                    if (out.length > 0 && string(out[out.length - 1]["role"]) == "assistant") {
+                        var prev: any = out[out.length - 1]
+                        var pc: []any = prev["content"]
+                        var b: int = 0
+                        while (b < blocks.length) { pc.push(blocks[b]); b = b + 1 }
+                        prev["content"] = pc
+                    } else {
+                        out.push({ "role": "assistant", "content": blocks })
+                    }
+                }
+                i = i + 1
+                continue
+            }
+            // user or tool → a user turn built from content blocks
+            var block: any = null
+            if (role == "tool") {
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": string(m.tool_call_id),
+                    "content": string(m.content),
+                }
+            } else {
+                block = { "type": "text", "text": string(m.content) }
+            }
+            if (out.length > 0 && string(out[out.length - 1]["role"]) == "user") {
+                var pu: any = out[out.length - 1]
+                var puc: []any = pu["content"]
+                puc.push(block)
+                pu["content"] = puc
+            } else {
+                out.push({ "role": "user", "content": [block] })
+            }
+            i = i + 1
+        }
+        return { "system": sys, "messages": out }
     }
 
     private _buildMessages(prompt: string): []any {

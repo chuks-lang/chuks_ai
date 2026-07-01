@@ -167,7 +167,7 @@ class GroqClient {
             if (options.stop != null) { body["stop"] = options.stop }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/chat/completions",
             json.stringify(body),
             this._headers()
@@ -238,7 +238,7 @@ class GroqClient {
             if (options.maxTokens != null) { body["max_tokens"] = options.maxTokens }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/chat/completions",
             json.stringify(body),
             this._headers()
@@ -293,7 +293,7 @@ class GroqClient {
             "response_format": { "type": "json_object" },
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/chat/completions",
             json.stringify(body),
             this._headers()
@@ -349,7 +349,7 @@ class GroqClient {
                 "max_tokens": this._maxTokens,
                 "tools": this._tools,
             }
-            var resp: any = await http.post(this._baseUrl + "/chat/completions", json.stringify(body), this._headers())
+            var resp: any = await http.request("POST", this._baseUrl + "/chat/completions", json.stringify(body), this._headers())
             var data: any = json.parse(resp.body)
             var choice: any = data.choices[0]
             var tcs: []any = []

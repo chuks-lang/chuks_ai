@@ -237,7 +237,7 @@ class OpenAIClient {
             if (options.toolChoice != null) { body["tool_choice"] = options.toolChoice }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/chat/completions",
             json.stringify(body),
             this._headers()
@@ -312,7 +312,7 @@ class OpenAIClient {
             if (options.maxTokens != null) { body["max_tokens"] = options.maxTokens }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/chat/completions",
             json.stringify(body),
             this._headers()
@@ -374,7 +374,7 @@ class OpenAIClient {
             "response_format": { "type": "json_object" },
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/chat/completions",
             json.stringify(body),
             this._headers()
@@ -407,7 +407,7 @@ class OpenAIClient {
             "model": embModel,
             "input": input,
         }
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/embeddings",
             json.stringify(body),
             this._headers()
@@ -441,7 +441,7 @@ class OpenAIClient {
             "model": embModel,
             "input": inputs,
         }
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/embeddings",
             json.stringify(body),
             this._headers()
@@ -511,7 +511,7 @@ class OpenAIClient {
                 "max_tokens": this._maxTokens,
                 "tools": this._tools,
             }
-            var resp: any = await http.post(
+            var resp: any = await http.request("POST", 
                 this._baseUrl + "/chat/completions",
                 json.stringify(body),
                 this._headers()

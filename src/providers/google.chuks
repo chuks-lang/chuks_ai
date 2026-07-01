@@ -179,7 +179,7 @@ class GoogleClient {
         }
 
         var endpoint: string = this._baseUrl + "/models/" + this._model + ":generateContent?key=" + this._apiKey
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             endpoint,
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -261,7 +261,7 @@ class GoogleClient {
         }
 
         var endpoint: string = this._baseUrl + "/models/" + this._model + ":streamGenerateContent?alt=sse&key=" + this._apiKey
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             endpoint,
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -326,7 +326,7 @@ class GoogleClient {
         }
 
         var endpoint: string = this._baseUrl + "/models/" + this._model + ":generateContent?key=" + this._apiKey
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             endpoint,
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -369,7 +369,7 @@ class GoogleClient {
             }
         }
         var endpoint: string = this._baseUrl + "/models/" + embModel + ":embedContent?key=" + this._apiKey
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             endpoint,
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -448,7 +448,7 @@ class GoogleClient {
             }
 
             var endpoint: string = this._baseUrl + "/models/" + this._model + ":generateContent?key=" + this._apiKey
-            var resp: any = await http.post(endpoint, json.stringify(body), { "Content-Type": "application/json" })
+            var resp: any = await http.request("POST", endpoint, json.stringify(body), { "Content-Type": "application/json" })
             var data: any = json.parse(resp.body)
 
             var candidate: any = data.candidates[0]

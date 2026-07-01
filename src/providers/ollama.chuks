@@ -169,7 +169,7 @@ class OllamaClient {
             if (options.maxTokens != null) { body["options"]["num_predict"] = options.maxTokens }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/api/chat",
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -242,7 +242,7 @@ class OllamaClient {
             if (options.maxTokens != null) { body["options"]["num_predict"] = options.maxTokens }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/api/chat",
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -298,7 +298,7 @@ class OllamaClient {
             }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/api/chat",
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -332,7 +332,7 @@ class OllamaClient {
             "model": embModel,
             "input": input,
         }
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/api/embed",
             json.stringify(body),
             { "Content-Type": "application/json" }
@@ -389,7 +389,7 @@ class OllamaClient {
                 "tools": this._tools,
                 "options": { "temperature": this._temperature, "num_predict": this._maxTokens },
             }
-            var resp: any = await http.post(this._baseUrl + "/api/chat", json.stringify(body), { "Content-Type": "application/json" })
+            var resp: any = await http.request("POST", this._baseUrl + "/api/chat", json.stringify(body), { "Content-Type": "application/json" })
             var data: any = json.parse(resp.body)
 
             var content: string = string(data.message.content)
@@ -435,7 +435,7 @@ class OllamaClient {
     // Returns the raw Ollama response object on success, or `null` on error.
     public async pull(modelName: string): Task<any> {
         var body: any = { "name": modelName, "stream": false }
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/api/pull",
             json.stringify(body),
             { "Content-Type": "application/json" }

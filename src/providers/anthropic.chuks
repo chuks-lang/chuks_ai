@@ -175,7 +175,7 @@ class AnthropicClient {
             if (options.stop != null) { body["stop_sequences"] = options.stop }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/messages",
             json.stringify(body),
             this._headers()
@@ -253,7 +253,7 @@ class AnthropicClient {
             if (options.maxTokens != null) { body["max_tokens"] = options.maxTokens }
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/messages",
             json.stringify(body),
             this._headers()
@@ -313,7 +313,7 @@ class AnthropicClient {
             body["system"] = this._systemPrompt
         }
 
-        var resp: any = await http.post(
+        var resp: any = await http.request("POST", 
             this._baseUrl + "/messages",
             json.stringify(body),
             this._headers()
@@ -379,7 +379,7 @@ class AnthropicClient {
             if (this._systemPrompt != "") {
                 body["system"] = this._systemPrompt
             }
-            var resp: any = await http.post(
+            var resp: any = await http.request("POST", 
                 this._baseUrl + "/messages",
                 json.stringify(body),
                 this._headers()

@@ -61,7 +61,7 @@ class AnthropicClient {
             if (config.apiVersion != null) { this._apiVersion = config.apiVersion }
         }
         if (this._apiKey == "") {
-            dotenv.load()
+            try { dotenv.load() } catch (e) { }  // no .env is fine; leave key empty
             this._apiKey = dotenv.get("ANTHROPIC_API_KEY", "")
         }
     }

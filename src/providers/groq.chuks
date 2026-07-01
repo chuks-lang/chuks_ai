@@ -54,7 +54,7 @@ class GroqClient {
             if (config.systemPrompt != null) { this._systemPrompt = config.systemPrompt }
         }
         if (this._apiKey == "") {
-            dotenv.load()
+            try { dotenv.load() } catch (e) { }  // no .env is fine; leave key empty
             this._apiKey = dotenv.get("GROQ_API_KEY", "")
         }
     }

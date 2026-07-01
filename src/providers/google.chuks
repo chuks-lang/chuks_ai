@@ -57,7 +57,7 @@ class GoogleClient {
             if (config.systemPrompt != null) { this._systemPrompt = config.systemPrompt }
         }
         if (this._apiKey == "") {
-            dotenv.load()
+            try { dotenv.load() } catch (e) { }  // no .env is fine; leave key empty
             this._apiKey = dotenv.get("GOOGLE_API_KEY", "")
         }
     }

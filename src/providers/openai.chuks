@@ -117,7 +117,7 @@ class OpenAIClient {
             }
         }
         if (this._apiKey == "") {
-            dotenv.load()
+            try { dotenv.load() } catch (e) { }  // no .env is fine; leave key empty
             this._apiKey = dotenv.get("OPENAI_API_KEY", "")
         }
     }

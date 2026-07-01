@@ -1,6 +1,6 @@
 {
   "name": "@chuks/ai",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Unified AI/LLM client for Chuks — one API, every provider. Native streaming via channels, parallel inference with spawn, typed structured outputs, and function/tool calling.",
   "entry": "src/index.chuks",
   "author": "Chuks Team",

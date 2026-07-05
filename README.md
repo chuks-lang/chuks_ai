@@ -49,6 +49,9 @@ async function main(): Task<any> {
 | `ChatMessage`      | `dataType`     | One entry in the chat history array.                      |
 | `ToolDefinition`   | `dataType`     | Schema descriptor for a registered tool.                  |
 | `ToolCall`         | `dataType`     | A tool invocation requested by the model.                 |
+| `media`            | singleton `Media` | Build image/document content parts (`imageFile`, `documentUrl`, ...). |
+| `Media`            | class          | The `media` helper type.                                  |
+| `ContentPart`      | `dataType`     | One piece of multimodal content (text / image / document). |
 
 Every provider client exposes the **same set of methods**. Swap providers by changing one line — `ai.openai(...)` → `ai.anthropic(...)` and your code keeps working.
 
@@ -264,6 +267,47 @@ println(profile.name)    // "John"
 println(profile.age)     // 28
 println(profile.skills)  // ["Chuks", "Go"]
 ```
+
+### Vision and documents (multimodal)
+
+Attach images or PDFs to any `complete` call. The same content model works on
+every provider; each translates it to its own wire format (Anthropic `source`
+blocks, OpenAI `image_url`, Gemini `inline_data`, Ollama `images`, ...). Text-only
+calls are unchanged.
+
+```chuks
+import { ai, media } from "pkg/@chuks/ai"
+
+var client = ai.anthropic("claude-sonnet-4-20250514")   // or ai.openai("gpt-4o"), ai.ollama("llava"), ...
+
+// Simple: a prompt plus attachments. Each accepts { url }, { base64, mediaType }, or { path }.
+var r = await client.complete("What is in this screenshot?", {
+    "images": [{ "path": "/tmp/shot.png" }],
+})
+println(r.content)
+
+// A remote image by URL, and a local PDF (Anthropic / Gemini read PDFs natively):
+await client.complete("Summarize this page and the attached report.", {
+    "images": [{ "url": "https://example.com/diagram.png" }],
+    "documents": [{ "path": "/tmp/report.pdf" }],
+})
+
+// Structured content (multi-turn / agent path): a message's `content` may be a
+// parts array built with the `media` helper.
+var msgs = [
+    { "role": "user", "content": [
+        media.text("Compare these two charts."),
+        media.imageFile("/tmp/q1.png"),
+        media.imageUrl("https://example.com/q2.png"),
+    ] },
+]
+await client.complete("", { "messages": msgs })
+```
+
+`media` constructors: `text`, `imageUrl`, `imageBytes(b64, mediaType)`,
+`imageFile(path)`, `documentUrl`, `documentBytes`, `documentFile(path)`.
+Providers that cannot read a document inline (OpenAI chat, Ollama) degrade a
+document part to a short text note rather than failing.
 
 ### Tool / function calling
 

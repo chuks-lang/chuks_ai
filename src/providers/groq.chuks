@@ -5,6 +5,7 @@ import { json } from "std/json"
 import { Channel } from "std/channel"
 import { strings } from "std/strings"
 import { dotenv } from "std/dotenv"
+import { withAttachments, openaiContent, openaiTranslateMessages } from "../media.chuks"
 
 // Chat-completion result. See `openai.chuks` for full field docs.
 dataType CompletionResult {
@@ -147,9 +148,9 @@ class GroqClient {
         // (used by chuks_agent's v2 tool-call loop)
         var messages: []any = []
         if (options != null && options.messages != null) {
-            messages = options.messages
+            messages = openaiTranslateMessages(options.messages)
         } else {
-            messages = this._buildMessages(prompt)
+            messages = this._buildMessages(prompt, options)
         }
         var body: any = {
             "model": this._model,
@@ -225,7 +226,7 @@ class GroqClient {
     //
     // Returns the full concatenated assistant text.
     public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
-        var messages: []any = this._buildMessages(prompt)
+        var messages: []any = this._buildMessages(prompt, options)
         var body: any = {
             "model": this._model,
             "messages": messages,
@@ -287,7 +288,7 @@ class GroqClient {
         var schemaPrompt: string = prompt + "\n\nRespond ONLY with valid JSON matching this exact schema:\n" + json.stringify(schema)
         var body: any = {
             "model": this._model,
-            "messages": this._buildMessages(schemaPrompt),
+            "messages": this._buildMessages(schemaPrompt, null),
             "temperature": this._temperature,
             "max_tokens": this._maxTokens,
             "response_format": { "type": "json_object" },
@@ -334,7 +335,7 @@ class GroqClient {
                 i = i + 1
             }
 
-            var messages: []any = this._buildMessages(prompt)
+            var messages: []any = this._buildMessages(prompt, options)
             messages.push({ "role": "assistant", "tool_calls": result.toolCalls })
             var j: int = 0
             while (j < toolMessages.length) {
@@ -386,7 +387,7 @@ class GroqClient {
         }
     }
 
-    private _buildMessages(prompt: string): []any {
+    private _buildMessages(prompt: string, options: any?): []any {
         var messages: []any = []
         if (this._systemPrompt != "") {
             messages.push({ "role": "system", "content": this._systemPrompt })
@@ -398,7 +399,7 @@ class GroqClient {
                 i = i + 1
             }
         }
-        messages.push({ "role": "user", "content": prompt })
+        messages.push({ "role": "user", "content": openaiContent(withAttachments(prompt, options)) })
         return messages
     }
 

@@ -4,6 +4,7 @@ import { http } from "std/http"
 import { json } from "std/json"
 import { Channel } from "std/channel"
 import { strings } from "std/strings"
+import { isParts, withAttachments, ContentPart, fetchToBase64 } from "../media.chuks"
 
 // Chat-completion result. See `openai.chuks` for full field docs.
 dataType CompletionResult {
@@ -147,10 +148,10 @@ class OllamaClient {
         var messages: []any = []
         var usedOverride: bool = false
         if (options != null && options.messages != null) {
-            messages = options.messages
+            messages = await this._ollamaTranslate(options.messages)
             usedOverride = true
         } else {
-            messages = this._buildMessages(prompt)
+            messages = await this._buildMessages(prompt, options)
         }
         var body: any = {
             "model": this._model,
@@ -227,7 +228,7 @@ class OllamaClient {
     //
     // Returns the full concatenated assistant text.
     public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
-        var messages: []any = this._buildMessages(prompt)
+        var messages: []any = await this._buildMessages(prompt, options)
         var body: any = {
             "model": this._model,
             "messages": messages,
@@ -287,9 +288,10 @@ class OllamaClient {
     // Returns the parsed JSON, or `null` if parsing fails.
     public async structured(prompt: string, schema: any, options: any?): Task<any> {
         var schemaPrompt: string = prompt + "\n\nRespond ONLY with valid JSON matching this exact schema:\n" + json.stringify(schema)
+        var schemaMessages: []any = await this._buildMessages(schemaPrompt, null)
         var body: any = {
             "model": this._model,
-            "messages": this._buildMessages(schemaPrompt),
+            "messages": schemaMessages,
             "stream": false,
             "format": "json",
             "options": {
@@ -374,7 +376,7 @@ class OllamaClient {
                 i = i + 1
             }
 
-            var messages: []any = this._buildMessages(prompt)
+            var messages: []any = await this._buildMessages(prompt, options)
             messages.push({ "role": "assistant", "content": result.content, "tool_calls": result.toolCalls })
             var j: int = 0
             while (j < toolMessages.length) {
@@ -445,7 +447,7 @@ class OllamaClient {
 
     // ─── Internals ──────────────────────────────────────────────
 
-    private _buildMessages(prompt: string): []any {
+    private async _buildMessages(prompt: string, options: any?): Task<[]any> {
         var messages: []any = []
         if (this._systemPrompt != "") {
             messages.push({ "role": "system", "content": this._systemPrompt })
@@ -457,8 +459,63 @@ class OllamaClient {
                 i = i + 1
             }
         }
-        messages.push({ "role": "user", "content": prompt })
+        var content: any = await this._resolveBytes(withAttachments(prompt, options))
+        messages.push(this._ollamaMsg("user", content))
         return messages
+    }
+
+    // Ollama's chat API needs inline bytes: resolve any url image/document parts
+    // to base64, leaving base64 parts (and plain-string content) untouched.
+    private async _resolveBytes(content: any): Task<any> {
+        if (!isParts(content)) { return content }
+        var parts: []ContentPart = content
+        var out: []ContentPart = []
+        for (var part of parts) {
+            if ((part.type == "image" || part.type == "document") && part.base64 == null && part.url != null) {
+                var b64: string = await fetchToBase64(part.url ?? "")
+                out.push({ "type": part.type, "base64": b64, "mediaType": part.mediaType })
+            } else {
+                out.push(part)
+            }
+        }
+        return out
+    }
+
+    // Build one Ollama chat message. Text parts join into `content`; image parts'
+    // base64 go in the sibling `images` array (Ollama's vision format). Ollama
+    // cannot read documents, so a document part degrades to a text note.
+    private _ollamaMsg(role: string, content: any): any {
+        if (!isParts(content)) { return { "role": role, "content": content } }
+        var parts: []ContentPart = content
+        var text: string = ""
+        var images: []string = []
+        for (var part of parts) {
+            if (part.type == "text") {
+                text = text + (part.text ?? "")
+            } else if (part.type == "image") {
+                if (part.base64 != null) { images.push(part.base64) }
+            } else if (part.type == "document") {
+                text = text + "\n[a document was attached; this model reads text and images only]"
+            }
+        }
+        var msg: any = { "role": role, "content": text }
+        if (images.length > 0) { msg["images"] = images }
+        return msg
+    }
+
+    // Translate multimodal content in a caller-supplied messages array (the
+    // `options.messages` path) into Ollama messages. Text/tool messages pass through.
+    private async _ollamaTranslate(msgs: []any): Task<[]any> {
+        var out: []any = []
+        for (var m of msgs) {
+            if (m != null && m["content"] != null && isParts(m["content"])) {
+                var resolved: any = await this._resolveBytes(m["content"])
+                out.push(this._ollamaMsg(string(m["role"]), resolved))
+            } else {
+                out.push(m)
+            }
+        }
+        return out
     }
 
     private _trimHistory(): void {

@@ -4,6 +4,7 @@ import { json } from "std/json"
 import { Channel } from "std/channel"
 import { strings } from "std/strings"
 import { dotenv } from "std/dotenv"
+import { isParts, withAttachments, anthropicContent } from "../media.chuks"
 
 // Chat-completion result. See `openai.chuks` for full field docs.
 dataType CompletionResult {
@@ -156,7 +157,7 @@ class AnthropicClient {
             messages = norm["messages"]
             sysOverride = string(norm["system"])
         } else {
-            messages = this._buildMessages(prompt)
+            messages = this._buildMessages(prompt, options)
         }
         var body: any = {
             "model": this._model,
@@ -245,7 +246,7 @@ class AnthropicClient {
     //
     // Returns the full concatenated assistant text.
     public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
-        var messages: []any = this._buildMessages(prompt)
+        var messages: []any = this._buildMessages(prompt, options)
         var body: any = {
             "model": this._model,
             "messages": messages,
@@ -310,7 +311,7 @@ class AnthropicClient {
     // Returns the parsed JSON, or `null` if parsing fails.
     public async structured(prompt: string, schema: any, options: any?): Task<any> {
         var schemaPrompt: string = prompt + "\n\nRespond ONLY with valid JSON matching this exact schema:\n" + json.stringify(schema)
-        var messages: []any = this._buildMessages(schemaPrompt)
+        var messages: []any = this._buildMessages(schemaPrompt, null)
         var body: any = {
             "model": this._model,
             "messages": messages,
@@ -369,7 +370,7 @@ class AnthropicClient {
             }
 
             // Continue conversation with tool results
-            var messages: []any = this._buildMessages(prompt)
+            var messages: []any = this._buildMessages(prompt, options)
             messages.push({ "role": "assistant", "content": result.content })
             var k: int = 0
             while (k < toolResults.length) {
@@ -481,31 +482,36 @@ class AnthropicClient {
                 i = i + 1
                 continue
             }
-            // user or tool → a user turn built from content blocks
-            var block: any = null
+            // user or tool → a user turn built from content blocks. A user
+            // message may carry multimodal parts (text + image/document), which
+            // expand into multiple blocks.
+            var newBlocks: []any = []
             if (role == "tool") {
-                block = {
+                newBlocks.push({
                     "type": "tool_result",
                     "tool_use_id": string(m.tool_call_id),
                     "content": string(m.content),
-                }
+                })
+            } else if (isParts(m.content)) {
+                var translated: any = anthropicContent(m.content)
+                for (var tb of translated) { newBlocks.push(tb) }
             } else {
-                block = { "type": "text", "text": string(m.content) }
+                newBlocks.push({ "type": "text", "text": string(m.content) })
             }
             if (out.length > 0 && string(out[out.length - 1]["role"]) == "user") {
                 var pu: any = out[out.length - 1]
                 var puc: []any = pu["content"]
-                puc.push(block)
+                for (var nb of newBlocks) { puc.push(nb) }
                 pu["content"] = puc
             } else {
-                out.push({ "role": "user", "content": [block] })
+                out.push({ "role": "user", "content": newBlocks })
             }
             i = i + 1
         }
         return { "system": sys, "messages": out }
     }
 
-    private _buildMessages(prompt: string): []any {
+    private _buildMessages(prompt: string, options: any?): []any {
         var messages: []any = []
         if (this._historyEnabled) {
             var i: int = 0
@@ -514,7 +520,8 @@ class AnthropicClient {
                 i = i + 1
             }
         }
-        messages.push({ "role": "user", "content": prompt })
+        var content: any = withAttachments(prompt, options)
+        messages.push({ "role": "user", "content": anthropicContent(content) })
         return messages
     }
 

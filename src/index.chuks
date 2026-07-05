@@ -17,6 +17,7 @@ import { GoogleClient, createGoogle } from "./providers/google.chuks"
 import { MistralClient, createMistral } from "./providers/mistral.chuks"
 import { OllamaClient, createOllama } from "./providers/ollama.chuks"
 import { GroqClient, createGroq } from "./providers/groq.chuks"
+import { media, Media, ContentPart } from "./media.chuks"
 
 // ─── AI Facade ──────────────────────────────────────────────────
 // The unified entry point. Every provider is created through this
@@ -101,5 +102,8 @@ export {
     EmbeddingResult,
     ChatMessage,
     ToolDefinition,
-    ToolCall
+    ToolCall,
+    media,
+    Media,
+    ContentPart
 }

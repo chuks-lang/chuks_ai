@@ -1,11 +1,11 @@
 {
   "name": "@chuks/ai",
-  "version": "0.1.3",
-  "description": "Unified AI/LLM client for Chuks — one API, every provider. Native streaming via channels, parallel inference with spawn, typed structured outputs, and function/tool calling.",
+  "version": "0.2.0",
+  "description": "Unified AI/LLM client for Chuks — one API, every provider. Multimodal image + document input, native streaming via channels, parallel inference with spawn, typed structured outputs, and function/tool calling.",
   "entry": "src/index.chuks",
   "author": "Chuks Team",
   "license": "MIT",
-  "keywords": ["ai", "llm", "openai", "anthropic", "gemini", "mistral", "ollama", "groq", "streaming", "embeddings", "tool-calling"],
+  "keywords": ["ai", "llm", "vision", "multimodal", "openai", "anthropic", "gemini", "mistral", "ollama", "groq", "streaming", "embeddings", "tool-calling"],
   "repository": "https://github.com/chuks-lang/chuks_ai",
   "declaredDomains": ["api.anthropic.com", "generativelanguage.googleapis.com", "api.groq.com", "api.mistral.ai", "api.openai.com"],
   "dependencies": {}

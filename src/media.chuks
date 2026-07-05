@@ -1,0 +1,248 @@
+// chuks_ai/media — multimodal content parts (images + documents) for chat.
+//
+// A message's `content` is either a plain string (text only, unchanged, so
+// nothing that exists today breaks) OR a list of content parts. Each part is a
+// map keyed by "type":
+//
+//   { "type": "text",     "text": "..." }
+//   { "type": "image",    "url": "https://..." }                        remote image
+//   { "type": "image",    "base64": "...", "mediaType": "image/png" }   inline image
+//   { "type": "document", "url": "https://..." }                        remote PDF
+//   { "type": "document", "base64": "...", "mediaType": "application/pdf" }  inline PDF
+//
+// Each provider translates these parts into its own wire format (Anthropic
+// `source` blocks, OpenAI `image_url`, Gemini `inline_data`, Ollama `images[]`,
+// ...). Callers build parts with the `media` helper below, or pass loose
+// attachments via `options.images` / `options.documents` on `complete`.
+import { fs } from "std/fs"
+import { base64 } from "std/base64"
+import { http } from "std/http"
+
+// One piece of a multimodal message. `type` selects which fields apply:
+//   text     → `text`
+//   image    → `url`  OR  (`base64` + `mediaType`)
+//   document → `url`  OR  (`base64` + `mediaType`)
+export dataType ContentPart {
+    type: string          // "text" | "image" | "document"
+    text: string?         // text parts
+    url: string?          // remote image/document source
+    base64: string?       // inline (base64-encoded) source
+    mediaType: string?    // MIME type for an inline source, e.g. "image/png"
+}
+
+// Sniff a MIME type from a file path's extension.
+function _mimeOf(path: string): string {
+    var p: string = path.toLowerCase()
+    if (p.endsWith(".png")) { return "image/png" }
+    if (p.endsWith(".jpg") || p.endsWith(".jpeg")) { return "image/jpeg" }
+    if (p.endsWith(".gif")) { return "image/gif" }
+    if (p.endsWith(".webp")) { return "image/webp" }
+    if (p.endsWith(".pdf")) { return "application/pdf" }
+    return "application/octet-stream"
+}
+
+// Read a local file and base64-encode its raw bytes. `fs.readFile` preserves the
+// bytes exactly and `base64.encode` re-encodes them, so this is binary-safe.
+function _fileB64(path: string): string {
+    var raw: any = fs.readFile(path)
+    if (raw == null) { throw "media: cannot read file " + path }
+    return base64.encode(string(raw))
+}
+
+// Fetch a remote resource and return its raw bytes base64-encoded. Used by the
+// providers that require inline bytes rather than a URL (Ollama, Gemini).
+export async function fetchToBase64(url: string): Task<string> {
+    var resp: any = await http.get(url)
+    return base64.encode(string(resp.body))
+}
+
+// Constructors for content parts. Prefer these over hand-writing the maps.
+export class Media {
+    // A text part.
+    public text(t: string): ContentPart { return { "type": "text", "text": t } }
+
+    // An image from a remote URL (providers that need bytes fetch it themselves).
+    public imageUrl(url: string): ContentPart { return { "type": "image", "url": url } }
+
+    // An image from already-base64-encoded bytes plus its MIME type.
+    public imageBytes(b64: string, mediaType: string): ContentPart {
+        return { "type": "image", "base64": b64, "mediaType": mediaType }
+    }
+
+    // An image read from a local file (base64-encoded, MIME sniffed by extension).
+    public imageFile(path: string): ContentPart {
+        return { "type": "image", "base64": _fileB64(path), "mediaType": _mimeOf(path) }
+    }
+
+    // A document (PDF) from a remote URL.
+    public documentUrl(url: string): ContentPart {
+        return { "type": "document", "url": url, "mediaType": "application/pdf" }
+    }
+
+    // A document from already-base64-encoded bytes plus its MIME type.
+    public documentBytes(b64: string, mediaType: string): ContentPart {
+        return { "type": "document", "base64": b64, "mediaType": mediaType }
+    }
+
+    // A document read from a local file (base64-encoded, MIME sniffed).
+    public documentFile(path: string): ContentPart {
+        return { "type": "document", "base64": _fileB64(path), "mediaType": _mimeOf(path) }
+    }
+}
+
+export var media: Media = new Media()
+
+// True when a message's `content` is a content-parts array rather than a plain
+// string. Providers switch on this: strings keep today's behaviour, arrays get
+// translated into the provider's multimodal wire format.
+export function isParts(content: any): bool {
+    return typeof(content) == "array"
+}
+
+// ─── OpenAI-shaped translation ──────────────────────────────────────
+// Shared by the OpenAI, Mistral and Groq providers, which all use the
+// chat-completions `content` parts format (`text` + `image_url`).
+
+function _openaiImageUrl(part: ContentPart): string {
+    if (part.url != null) { return part.url }
+    var mt: string = part.mediaType != null ? part.mediaType : "image/png"
+    return "data:" + mt + ";base64," + (part.base64 ?? "")
+}
+
+// Translate a canonical message content into OpenAI-compatible content: a plain
+// string stays a string; a parts array becomes `text` + `image_url` parts (with
+// base64 images sent as a `data:` URL). These providers cannot read documents
+// inline, so a document part degrades to a short text note.
+export function openaiContent(content: any): any {
+    if (!isParts(content)) { return content }
+    var parts: []ContentPart = content
+    var out: []any = []
+    for (var part of parts) {
+        if (part.type == "text") {
+            out.push({ "type": "text", "text": part.text })
+        } else if (part.type == "image") {
+            out.push({ "type": "image_url", "image_url": { "url": _openaiImageUrl(part) } })
+        } else if (part.type == "document") {
+            out.push({ "type": "text", "text": "[a document was attached; this model reads text and images only]" })
+        }
+    }
+    return out
+}
+
+// ─── Anthropic-shaped translation ───────────────────────────────────
+
+// A base64 or url `source` object for an Anthropic image/document block.
+function _anthSource(part: ContentPart): any {
+    if (part.url != null) { return { "type": "url", "url": part.url } }
+    var mt: string = part.mediaType != null ? part.mediaType : "image/png"
+    return { "type": "base64", "media_type": mt, "data": part.base64 }
+}
+
+// Translate a canonical message content into Anthropic's wire form: a plain
+// string stays a string; a parts array becomes Anthropic content blocks
+// (text / image / document with a base64 or url `source`).
+export function anthropicContent(content: any): any {
+    if (!isParts(content)) { return content }
+    var parts: []ContentPart = content
+    var blocks: []any = []
+    for (var part of parts) {
+        if (part.type == "text") {
+            blocks.push({ "type": "text", "text": part.text })
+        } else if (part.type == "image") {
+            blocks.push({ "type": "image", "source": _anthSource(part) })
+        } else if (part.type == "document") {
+            blocks.push({ "type": "document", "source": _anthSource(part) })
+        }
+    }
+    return blocks
+}
+
+// ─── Gemini-shaped translation ──────────────────────────────────────
+
+// Translate a canonical message content into Gemini `parts`: text stays text;
+// image/document parts become `inline_data` with base64 bytes (a url is fetched
+// to bytes, since Gemini inline data needs the raw content).
+export async function geminiParts(content: any): Task<[]any> {
+    if (!isParts(content)) { return [{ "text": string(content) }] }
+    var parts: []ContentPart = content
+    var out: []any = []
+    for (var part of parts) {
+        if (part.type == "text") {
+            out.push({ "text": part.text })
+        } else {
+            var b64: string = part.base64 ?? ""
+            if (b64 == "" && part.url != null) { b64 = await fetchToBase64(part.url ?? "") }
+            var mt: string = part.mediaType ?? (part.type == "document" ? "application/pdf" : "image/png")
+            out.push({ "inline_data": { "mime_type": mt, "data": b64 } })
+        }
+    }
+    return out
+}
+
+// Translate any multimodal content in a caller-supplied OpenAI-shaped messages
+// array (the `options.messages` path). String content and tool_calls untouched.
+export function openaiTranslateMessages(msgs: []any): []any {
+    var out: []any = []
+    for (var m of msgs) {
+        if (m != null && m["content"] != null && isParts(m["content"])) {
+            var copy: any = m
+            copy["content"] = openaiContent(m["content"])
+            out.push(copy)
+        } else {
+            out.push(m)
+        }
+    }
+    return out
+}
+
+// Normalize a loosely-shaped image attachment (from `options.images`) into a
+// canonical image part. Accepts { url }, { base64, mediaType }, { path }, or an
+// already-canonical part.
+function _normImage(im: any): ContentPart {
+    if (im == null) { return { "type": "text", "text": "" } }
+    if (im["path"] != null) {
+        var p: string = string(im["path"])
+        return { "type": "image", "base64": _fileB64(p), "mediaType": _mimeOf(p) }
+    }
+    if (im["base64"] != null) {
+        var mt: string = im["mediaType"] != null ? string(im["mediaType"]) : "image/png"
+        return { "type": "image", "base64": string(im["base64"]), "mediaType": mt }
+    }
+    if (im["url"] != null) { return { "type": "image", "url": string(im["url"]) } }
+    return { "type": "text", "text": "" }
+}
+
+// Normalize a loosely-shaped document attachment (from `options.documents`).
+function _normDoc(d: any): ContentPart {
+    if (d == null) { return { "type": "text", "text": "" } }
+    if (d["path"] != null) {
+        var p: string = string(d["path"])
+        return { "type": "document", "base64": _fileB64(p), "mediaType": _mimeOf(p) }
+    }
+    if (d["base64"] != null) {
+        var mt: string = d["mediaType"] != null ? string(d["mediaType"]) : "application/pdf"
+        return { "type": "document", "base64": string(d["base64"]), "mediaType": mt }
+    }
+    if (d["url"] != null) { return { "type": "document", "url": string(d["url"]), "mediaType": "application/pdf" } }
+    return { "type": "text", "text": "" }
+}
+
+// Build a user message's content from a text prompt plus optional image/document
+// attachments in `options`. Returns the plain string when there are no
+// attachments (so text-only calls are unchanged), else a `[]ContentPart`. The
+// return type is `any` because it is a string-or-parts union.
+export function withAttachments(prompt: string, options: any): any {
+    if (options == null) { return prompt }
+    var imgs: any = options.images
+    var docs: any = options.documents
+    if (imgs == null && docs == null) { return prompt }
+    var parts: []ContentPart = []
+    if (prompt != "") { parts.push({ "type": "text", "text": prompt }) }
+    if (imgs != null) {
+        for (var im of imgs) { parts.push(_normImage(im)) }
+    }
+    if (docs != null) {
+        for (var d of docs) { parts.push(_normDoc(d)) }
+    }
+    return parts
+}

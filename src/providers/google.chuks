@@ -4,6 +4,7 @@ import { json } from "std/json"
 import { Channel } from "std/channel"
 import { strings } from "std/strings"
 import { dotenv } from "std/dotenv"
+import { isParts, withAttachments, geminiParts } from "../media.chuks"
 
 // Chat-completion result. See `openai.chuks` for full field docs.
 dataType CompletionResult {
@@ -148,11 +149,11 @@ class GoogleClient {
         var contents: []any = []
         var sysOverride: string = ""
         if (options != null && options.messages != null) {
-            var norm: any = this._normalizeContents(options.messages)
+            var norm: any = await this._normalizeContents(options.messages)
             contents = norm["contents"]
             sysOverride = string(norm["system"])
         } else {
-            contents = this._buildContents(prompt)
+            contents = await this._buildContents(prompt, options)
         }
         var body: any = {
             "contents": contents,
@@ -256,7 +257,7 @@ class GoogleClient {
     //
     // Returns the full concatenated assistant text.
     public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
-        var contents: []any = this._buildContents(prompt)
+        var contents: []any = await this._buildContents(prompt, options)
         var body: any = {
             "contents": contents,
             "generationConfig": {
@@ -325,8 +326,9 @@ class GoogleClient {
     // Returns the parsed JSON, or `null` on HTTP error.
     public async structured(prompt: string, schema: any, options: any?): Task<any> {
         var schemaPrompt: string = prompt + "\n\nRespond ONLY with valid JSON matching this exact schema:\n" + json.stringify(schema)
+        var schemaContents: []any = await this._buildContents(schemaPrompt, null)
         var body: any = {
-            "contents": this._buildContents(schemaPrompt),
+            "contents": schemaContents,
             "generationConfig": {
                 "temperature": this._temperature,
                 "maxOutputTokens": this._maxTokens,
@@ -427,7 +429,7 @@ class GoogleClient {
                 i = i + 1
             }
 
-            var contents: []any = this._buildContents(prompt)
+            var contents: []any = await this._buildContents(prompt, options)
             contents.push({
                 "role": "model",
                 "parts": result.toolCalls,
@@ -498,7 +500,7 @@ class GoogleClient {
     // top-level `systemInstruction`. Assistant tool_calls become functionCall
     // parts; tool results become a user turn with a functionResponse part; and
     // consecutive same-role turns are merged. Returns { system, contents }.
-    private _normalizeContents(raw: []any): any {
+    private async _normalizeContents(raw: []any): Task<any> {
         var sys: string = ""
         var out: []any = []
         var i: int = 0
@@ -540,6 +542,9 @@ class GoogleClient {
                         "response": { "result": string(m.content) },
                     },
                 })
+            } else if (isParts(m.content)) {
+                var gp: []any = await geminiParts(m.content)
+                for (var g of gp) { parts.push(g) }
             } else {
                 parts.push({ "text": string(m.content) })
             }
@@ -558,7 +563,7 @@ class GoogleClient {
         return { "system": sys, "contents": out }
     }
 
-    private _buildContents(prompt: string): []any {
+    private async _buildContents(prompt: string, options: any?): Task<[]any> {
         var contents: []any = []
         if (this._historyEnabled) {
             var i: int = 0
@@ -567,9 +572,10 @@ class GoogleClient {
                 i = i + 1
             }
         }
+        var content: any = withAttachments(prompt, options)
         contents.push({
             "role": "user",
-            "parts": [{ "text": prompt }],
+            "parts": await geminiParts(content),
         })
         return contents
     }

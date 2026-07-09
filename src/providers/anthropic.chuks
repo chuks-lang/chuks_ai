@@ -237,16 +237,27 @@ class AnthropicClient {
 
     // ─── Core: Stream ───────────────────────────────────────────
 
-    // Stream tokens from Claude into a channel as they arrive.
+    // streamComplete is the real-streaming twin of complete(): it opens the
+    // request with `stream: true` and reads Anthropic's SSE incrementally via
+    // the pull-based http.open client, invoking `onToken` for each text delta as
+    // it arrives (no buffering the whole body first). It returns the SAME shape
+    // complete() does — { content, model, usage, finishReason, toolCalls } — so
+    // the agent loop can stream and still handle tool calls + usage uniformly.
     //
     // Args:
-    // - `prompt`  — the user message
-    // - `ch`      — `Channel<string>` that receives tokens; closed when done
-    // - `options` — optional `temperature` / `maxTokens` overrides
-    //
-    // Returns the full concatenated assistant text.
-    public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
-        var messages: []any = this._buildMessages(prompt, options)
+    // - `prompt`  — the user message (ignored when options.messages is supplied)
+    // - `options` — same options complete() accepts (messages, temperature, …)
+    // - `onToken` — called with each text delta as it streams in
+    public async streamComplete(prompt: string, options: any?, onToken: function(string): void): Task<any> {
+        var messages: []any = []
+        var sysOverride: string = ""
+        if (options != null && options.messages != null) {
+            var norm: any = this._normalizeMessages(options.messages)
+            messages = norm["messages"]
+            sysOverride = string(norm["system"])
+        } else {
+            messages = this._buildMessages(prompt, options)
+        }
         var body: any = {
             "model": this._model,
             "messages": messages,
@@ -254,50 +265,96 @@ class AnthropicClient {
             "temperature": this._temperature,
             "stream": true,
         }
-        if (this._systemPrompt != "") {
-            body["system"] = this._systemPrompt
-        }
+        if (this._systemPrompt != "") { body["system"] = this._systemPrompt }
+        if (sysOverride != "") { body["system"] = sysOverride }
+        if (this._tools.length > 0) { body["tools"] = this._tools }
         if (options != null) {
             if (options.temperature != null) { body["temperature"] = options.temperature }
             if (options.maxTokens != null) { body["max_tokens"] = options.maxTokens }
+            if (options.topP != null) { body["top_p"] = options.topP }
+            if (options.topK != null) { body["top_k"] = options.topK }
+            if (options.stop != null) { body["stop_sequences"] = options.stop }
         }
 
-        var resp: any = await http.request("POST", 
+        var stream: any = await http.open("POST",
             this._baseUrl + "/messages",
             json.stringify(body),
             this._headers()
         )
+        var status: int = stream.status()
 
-        // Parse SSE stream — Anthropic uses "event:" + "data:" pairs
-        var fullContent: string = ""
-        var lines: []string = strings.split(resp.body, "\n")
-        var i: int = 0
-        while (i < lines.length) {
-            var line: string = strings.trim(lines[i])
-            if (strings.startsWith(line, "data: ")) {
-                var payload: string = strings.slice(line, 6, line.length)
-                var chunk: any = json.parse(payload)
-                if (chunk.type == "content_block_delta") {
-                    if (chunk.delta != null) {
-                        if (chunk.delta.text != null) {
-                            var token: string = string(chunk.delta.text)
-                            fullContent = fullContent + token
-                            ch.send(token)
-                        }
+        var content: string = ""
+        var toolCalls: []any = []
+        var inTok: int = 0
+        var outTok: int = 0
+        var finishReason: string = ""
+        // tool_use blocks stream their JSON args across input_json_delta events.
+        var inToolBlock: bool = false
+        var curToolId: string = ""
+        var curToolName: string = ""
+        var curToolJson: string = ""
+
+        while (true) {
+            var payload: string? = await stream.read()
+            if (payload == null) { break }
+            var evt: any = json.parse(payload)
+            var etype: string = string(evt.type)
+            if (etype == "message_start") {
+                if (evt.message != null && evt.message.usage != null && evt.message.usage.input_tokens != null) {
+                    inTok = int(evt.message.usage.input_tokens)
+                }
+            } else if (etype == "content_block_start") {
+                if (evt.content_block != null && evt.content_block.type == "tool_use") {
+                    inToolBlock = true
+                    curToolId = string(evt.content_block.id)
+                    curToolName = string(evt.content_block.name)
+                    curToolJson = ""
+                }
+            } else if (etype == "content_block_delta") {
+                if (evt.delta != null) {
+                    if (evt.delta.type == "text_delta" && evt.delta.text != null) {
+                        var t: string = string(evt.delta.text)
+                        content = content + t
+                        onToken(t)
+                    } else if (evt.delta.type == "input_json_delta" && evt.delta.partial_json != null) {
+                        curToolJson = curToolJson + string(evt.delta.partial_json)
                     }
                 }
+            } else if (etype == "content_block_stop") {
+                if (inToolBlock) {
+                    var args: any = {}
+                    if (curToolJson != "") { args = json.parse(curToolJson) }
+                    toolCalls.push({ id: curToolId, name: curToolName, arguments: args })
+                    inToolBlock = false
+                }
+            } else if (etype == "message_delta") {
+                if (evt.usage != null && evt.usage.output_tokens != null) { outTok = int(evt.usage.output_tokens) }
+                if (evt.delta != null && evt.delta.stop_reason != null) { finishReason = string(evt.delta.stop_reason) }
             }
-            i = i + 1
         }
-        ch.close()
+        stream.close()
 
         if (this._historyEnabled) {
             this._history.push({ "role": "user", "content": prompt })
-            this._history.push({ "role": "assistant", "content": fullContent })
+            this._history.push({ "role": "assistant", "content": content })
             this._trimHistory()
         }
 
-        return fullContent
+        return {
+            "content": content,
+            "model": this._model,
+            "usage": { "input_tokens": inTok, "output_tokens": outTok },
+            "finishReason": finishReason,
+            "toolCalls": toolCalls,
+        }
+    }
+
+    // Stream tokens from Claude into a channel as they arrive. Thin wrapper over
+    // streamComplete; returns the full concatenated assistant text.
+    public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
+        var r: any = await this.streamComplete(prompt, options, function(t: string): void { ch.send(t) })
+        ch.close()
+        return string(r["content"])
     }
 
     // ─── Core: Structured Output ────────────────────────────────

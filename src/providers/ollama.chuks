@@ -227,8 +227,18 @@ class OllamaClient {
     // - `options` — optional `temperature` / `maxTokens` overrides
     //
     // Returns the full concatenated assistant text.
-    public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
-        var messages: []any = await this._buildMessages(prompt, options)
+    // streamComplete: real-streaming twin of complete(). Ollama streams as
+    // newline-delimited JSON (NDJSON), not SSE, so this reads raw chunks via
+    // http.open's readChunk() and reassembles whole lines across chunk
+    // boundaries, invoking onToken per content delta. Returns complete()'s shape
+    // { content, model, usage, finishReason, toolCalls }.
+    public async streamComplete(prompt: string, options: any?, onToken: function(string): void): Task<any> {
+        var messages: []any = []
+        if (options != null && options.messages != null) {
+            messages = await this._ollamaTranslate(options.messages)
+        } else {
+            messages = await this._buildMessages(prompt, options)
+        }
         var body: any = {
             "model": this._model,
             "messages": messages,
@@ -238,46 +248,91 @@ class OllamaClient {
                 "num_predict": this._maxTokens,
             }
         }
+        if (this._tools.length > 0) { body["tools"] = this._tools }
         if (options != null) {
             if (options.temperature != null) { body["options"]["temperature"] = options.temperature }
             if (options.maxTokens != null) { body["options"]["num_predict"] = options.maxTokens }
         }
 
-        var resp: any = await http.request("POST", 
+        var stream: any = await http.open("POST",
             this._baseUrl + "/api/chat",
             json.stringify(body),
             { "Content-Type": "application/json" }
         )
 
-        // Ollama streams as newline-delimited JSON (NDJSON)
-        var fullContent: string = ""
-        var lines: []string = strings.split(resp.body, "\n")
-        var i: int = 0
-        while (i < lines.length) {
-            var line: string = strings.trim(lines[i])
-            if (line != "") {
-                var chunk: any = json.parse(line)
-                if (chunk.message != null) {
-                    if (chunk.message.content != null) {
-                        var token: string = string(chunk.message.content)
-                        if (token != "") {
-                            fullContent = fullContent + token
-                            ch.send(token)
-                        }
+        var content: string = ""
+        var toolCalls: []any = []
+        var usage: any = null
+        var finishReason: string = ""
+        var buf: string = ""
+
+        // Parse one complete NDJSON line: emit its content delta, collect tool
+        // calls, and pick up usage counters from the terminal (done) object.
+        var handleLine: function(string): void = function(raw: string): void {
+            var line: string = strings.trim(raw)
+            if (line == "") { return }
+            var chunk: any = json.parse(line)
+            if (chunk.message != null) {
+                if (chunk.message.content != null) {
+                    var t: string = string(chunk.message.content)
+                    if (t != "") {
+                        content = content + t
+                        onToken(t)
+                    }
+                }
+                if (chunk.message.tool_calls != null) {
+                    var k: int = 0
+                    while (k < chunk.message.tool_calls.length) {
+                        var tc: any = chunk.message.tool_calls[k]
+                        toolCalls.push({
+                            id: string(toolCalls.length),
+                            name: string(tc.function.name),
+                            arguments: tc.function.arguments,
+                        })
+                        k = k + 1
                     }
                 }
             }
-            i = i + 1
+            if (chunk.done == true) {
+                finishReason = "stop"
+                usage = { "prompt_tokens": chunk.prompt_eval_count, "completion_tokens": chunk.eval_count }
+            }
         }
-        ch.close()
+
+        while (true) {
+            var c: string? = await stream.readChunk()
+            if (c == null) { break }
+            buf = buf + c
+            var parts: []string = strings.split(buf, "\n")
+            var pi: int = 0
+            while (pi < parts.length - 1) {
+                handleLine(parts[pi])
+                pi = pi + 1
+            }
+            buf = parts[parts.length - 1]
+        }
+        handleLine(buf)
+        stream.close()
 
         if (this._historyEnabled) {
             this._history.push({ "role": "user", "content": prompt })
-            this._history.push({ "role": "assistant", "content": fullContent })
+            this._history.push({ "role": "assistant", "content": content })
             this._trimHistory()
         }
 
-        return fullContent
+        return {
+            "content": content,
+            "model": this._model,
+            "usage": usage,
+            "finishReason": finishReason,
+            "toolCalls": toolCalls,
+        }
+    }
+
+    public async stream(prompt: string, ch: Channel<string>, options: any?): Task<any> {
+        var r: any = await this.streamComplete(prompt, options, function(t: string): void { ch.send(t) })
+        ch.close()
+        return string(r["content"])
     }
 
     // ─── Core: Structured Output ────────────────────────────────
